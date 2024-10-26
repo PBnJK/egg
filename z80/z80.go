@@ -33,6 +33,7 @@
 package z80
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 
@@ -112,17 +113,178 @@ func (m *Z80) LoadProgram(program []uint8) error {
 	return m.SetMemoryChunk(TEXTPAGE, program)
 }
 
-func (m *Z80) NextInstruction() (*machine.Call, error) {
-	opcode, err := m.GetMemory(m.GetCurrentInstructionAddress())
-	if err != nil {
-		return nil, fmt.Errorf(
-			machine.InterCtx.Get(
-				"failed to fetch instruction from memory: %v",
-			), err,
-		)
+func (m *Z80) next8() uint8 {
+	byte, _ := m.GetMemory(m.GetCurrentInstructionAddress())
+	m.registers.PC++
+	return byte
+}
+
+func (m *Z80) next16() uint16 {
+	values, _ := m.GetMemoryChunk(m.GetCurrentInstructionAddress(), 2)
+	m.registers.PC += 2
+	return binary.BigEndian.Uint16(values)
+}
+
+// Handles instruction in the format
+// DD [OPCODE] ...
+func (m *Z80) handleDDInstruction() (*machine.Call, error) {
+	opcode := m.next8()
+
+	if opcode&0b111 == 0b110 {
+		switch (opcode & 0b11000000) >> 6 {
+		case 0b00:
+			return nil, nil
+
+		// LD r, (IX+d)
+		case 0b01:
+			r := m.numToRegister((opcode & 0b00111000) >> 3)
+			// TODO: there's gotta be a nicer way to do this
+			//       (there is, I'm just putting it off for Later(tm))
+			*r, _ = m.GetMemory(uint64(int8(m.registers.IX) + int8(m.next8())))
+			return nil, nil
+		}
 	}
 
-	fmt.Printf("got %v\n", opcode)
+	switch opcode {
+	case 0x21:
+		nn := m.next16()
+		m.registers.IX = nn
+	}
+
+	return nil, nil
+}
+
+// Handles instruction in the format
+// ED [OPCODE] ...
+func (m *Z80) handleEDInstruction() (*machine.Call, error) {
+	opcode := m.next8()
+
+	switch opcode {
+	case 0b01001011:
+		nn := m.next16()
+		m.registers.IX = nn
+	}
+
+	return nil, nil
+}
+
+// Handles instruction in the format
+// FD [OPCODE] ...
+func (m *Z80) handleFDInstruction() (*machine.Call, error) {
+	opcode := m.next8()
+
+	if opcode&0b111 == 0b110 {
+		switch (opcode & 0b11000000) >> 6 {
+		case 0b00:
+			return nil, nil
+
+		// LD r, (IY+d)
+		case 0b01:
+			r := m.numToRegister((opcode & 0b00111000) >> 3)
+			// TODO: make nicer
+			*r, _ = m.GetMemory(uint64(int8(m.registers.IY) + int8(m.next8())))
+			return nil, nil
+		}
+	}
+
+	switch opcode {
+	case 0x21:
+		nn := m.next16()
+		m.registers.IY = nn
+	}
+
+	return nil, nil
+}
+
+func (m *Z80) numToRegister(num uint8) *uint8 {
+	switch num {
+	case 0b000:
+		return &m.registers.BC.Low
+	case 0b001:
+		return &m.registers.BC.High
+	case 0b010:
+		return &m.registers.DE.Low
+	case 0b011:
+		return &m.registers.DE.High
+	case 0b100:
+		return &m.registers.HL.Low
+	case 0b101:
+		return &m.registers.HL.High
+	case 0b111:
+		return &m.registers.AF.Low
+	}
+
+	return nil
+}
+
+func (m *Z80) NextInstruction() (*machine.Call, error) {
+	opcode := m.next8()
+
+	// TODO: Remove all of this stuff. This is ugly, buggy... just plain *bad*!
+	if (opcode&0b11000000)>>6 == 0b01 {
+		// LD (HL), r
+		if opcode&0b111000 == 0b110 {
+			r := m.numToRegister(opcode & 0b111)
+			m.SetMemory(uint64(m.registers.HL.Get16()), *r)
+			return nil, nil
+		}
+
+		// LD r, r'
+		r := m.numToRegister((opcode & 0b00111000) >> 3)
+		*r = *m.numToRegister(opcode & 0b111)
+		return nil, nil
+	}
+
+	if opcode&0b111 == 0b110 {
+		switch (opcode & 0b11000000) >> 6 {
+		// LD r, n
+		case 0b00:
+			r := m.numToRegister((opcode & 0b00111000) >> 3)
+			*r = m.next8()
+			return nil, nil
+		// LD r, (HL)
+		case 0b01:
+			r := m.numToRegister((opcode & 0b00111000) >> 3)
+			*r, _ = m.GetMemory(m.registers.HL.Get16())
+			return nil, nil
+		}
+	}
+
+	switch opcode {
+	// NOP
+	case 0:
+		return nil, nil
+	// LD BC, nn
+	case 0b00000001:
+		nn := m.next16()
+		m.registers.BC.Set16(nn)
+	// LD DE, nn
+	case 0b00010001:
+		nn := m.next16()
+		m.registers.DE.Set16(nn)
+	// LD HL, nn
+	case 0b00100001:
+		nn := m.next16()
+		m.registers.HL.Set16(nn)
+	// LD SP, nn
+	case 0b00110001:
+		nn := m.next16()
+		m.registers.SP = nn
+	// LD HL, (nn)
+	case 0x2A:
+		nn, _ := m.GetMemoryChunk(m.GetCurrentInstructionAddress(), 2)
+		m.registers.PC += 2
+		m.SetMemoryChunk(m.registers.HL.Get16(), nn)
+	// 0xDD instruction subset
+	case 0xDD:
+		return m.handleDDInstruction()
+	// 0xED instruction subset
+	case 0xED:
+		return m.handleEDInstruction()
+	// 0xFD instruction subset
+	case 0xFD:
+		return m.handleFDInstruction()
+	}
 
 	return nil, nil
 }
