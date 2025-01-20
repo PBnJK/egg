@@ -25,8 +25,11 @@
 // - PC:  29
 //
 // Following the example of the MOS 6502, programs are loaded at the TEXTPAGE
-// insead of at 0, as is the actual behaviour of the Z80. Code is written, as
+// instead of at 0, as is the actual behaviour of the Z80. Code is written, as
 // such, to 0x8000 onwards.
+//
+// The HALT instruction is used for system calls, as the Z80 lacks a dedicated
+// instruction, similarly to the MOS 6502 emulator.
 //
 // Reference:
 // - https://www.zilog.com/docs/z80/um0080.pdf
@@ -546,9 +549,59 @@ func (m *Z80) GetRegisterNumber(r string) (uint64, error) {
 	}
 }
 
-// FIXME: Write this function
-func assemble(_ []assembler.ResolvedToken) ([]uint8, error) {
+func wrongArgsError(instruction string) error {
+	return fmt.Errorf(machine.InterCtx.Get("wrong number of arguments for instruction '%s', expected 2 arguments"), instruction)
+}
+
+func assembleLd(t assembler.ResolvedToken) (uint32, int, error) {
+	if len(t.Args) != 2 {
+		return 0, 0, wrongArgsError(string(t.Value))
+	}
+
+	return 0, 2, nil
+}
+
+func assembleInstruction(code []uint8, t assembler.ResolvedToken) (int, error) {
+	bin := uint32(0)
+	size := 0
+	var err error = nil
+
+	switch string(t.Value) {
+	case "ld":
+		bin, size, err = assembleLd(t)
+	}
+
+	if err != nil {
+		return 0, err
+	}
+
+	for i := range size {
+		code = append(code, uint8((bin>>i)&0xFF))
+	}
+
+	return size, nil
+}
+
+func assemble(t []assembler.ResolvedToken) ([]uint8, error) {
 	code := make([]uint8, 8)
+	addr := 0
+
+	for _, i := range t {
+		if i.Type == assembler.TOKEN_INSTRUCTION {
+			size, err := assembleInstruction(code, i)
+			if err != nil {
+				return code, fmt.Errorf(machine.InterCtx.Get("%v:%v: Error assembling: %v"), *i.File, i.Line, err)
+			}
+
+			addr += size
+		} else {
+			for _, c := range []uint8(i.Value) {
+				code = append(code, c)
+				addr++
+			}
+		}
+	}
+
 	return code, nil
 }
 
@@ -581,7 +634,6 @@ func (m *Z80) GetCurrentInstructionAddress() uint64 {
 
 func (m *Z80) ArchitectureInfo() machine.ArchitectureInfo {
 	return machine.ArchitectureInfo{
-		// TODO: Is brand name OK?
 		Name: "Zilog Z80",
 		// Words are actually 8-bit. We use 16 as that is the address size
 		WordWidth: 16,

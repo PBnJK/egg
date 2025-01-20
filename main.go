@@ -13,6 +13,7 @@ import (
 	"github.com/gboncoffee/egg/mips"
 	"github.com/gboncoffee/egg/riscv"
 	"github.com/gboncoffee/egg/sagui"
+	"github.com/gboncoffee/egg/z80"
 )
 
 const VERSION = "3.1.0"
@@ -22,7 +23,8 @@ func listArchs() {
 	fmt.Println(machine.InterCtx.Get(`Currently supported architetures:
 'riscv' - RISC-V IM, 32 bits
 'mips'  - Subset of MIPS32
-'sagui' - Fantasy 8 bit RISC`))
+'sagui' - Fantasy 8 bit RISC
+'z80'   - Zilog Z80`))
 }
 
 func version() {
@@ -105,6 +107,9 @@ func main() {
 		m = &r
 	case "sagui":
 		var r sagui.Sagui
+		m = &r
+	case "z80":
+		var r z80.Z80
 		m = &r
 	default:
 		log.Printf(machine.InterCtx.Get("Unknown architeture: %v\n"), architeture)
